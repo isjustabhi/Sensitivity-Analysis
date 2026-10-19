@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# R
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rproj
+
+# Shiny / deploy
+rsconnect/
+.shiny_cache/
+
+# PDFs and papers (keep out of the repo)
+*.pdf
+
+# Local-only sample file (users upload their own data)
+sample_twin_power_data.csv
