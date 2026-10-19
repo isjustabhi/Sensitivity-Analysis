@@ -5,19 +5,25 @@
 
 # ==============================================================================
 # PACKAGES ----
+# Do not call install.packages() here — shinyapps.io installs deps at deploy time.
+# Locally, install once: install.packages(c("shiny","bslib","DT","tidyverse",
+#   "simr","lme4","lmerTest","pwr","scales"))
 # ==============================================================================
 
-packages <- c(
-  "shiny", "bslib", "DT",
-  "tidyverse", "simr", "lme4", "lmerTest", "pwr", "scales"
-)
+library(shiny)
+library(bslib)
+library(DT)
+library(tidyverse)
+library(simr)
+library(lme4)
+library(lmerTest)
+library(pwr)
+library(scales)
 
-installed <- packages %in% rownames(installed.packages())
-if (any(!installed)) {
-  install.packages(packages[!installed])
+# Null-coalesce helper (works on older R / shinyapps images)
+`%||%` <- function(x, y) {
+  if (is.null(x)) y else x
 }
-
-lapply(packages, library, character.only = TRUE)
 
 # ==============================================================================
 # ANALYSIS HELPERS (from sensitivity_Analysis_V02.R) ----
