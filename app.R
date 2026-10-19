@@ -487,8 +487,8 @@ ui <- fluidPage(
         div(class = "brand-mark", "SA"),
         div(
           class = "brand-text",
-          tags$p(class = "brand-title", "Sensitivity Analysis"),
-          tags$p(class = "brand-sub", "Mixed-model power curves")
+          tags$p(class = "brand-title", "Sensitivity Power Analysis"),
+          tags$p(class = "brand-sub", "via simr · multilevel models")
         )
       ),
 
@@ -522,10 +522,34 @@ ui <- fluidPage(
           selectInput("exclude_ids", "Exclude ID columns", choices = NULL, multiple = TRUE),
           selectInput("predictor", "Focal predictor (IV)", choices = NULL),
           selectInput("outcomes", "Focal outcomes (DVs)", choices = NULL, multiple = TRUE),
-          selectInput("covariates", "Covariates", choices = NULL, multiple = TRUE),
+          selectInput(
+            "covariates",
+            "Covariates (controls + other predictors in the same model)",
+            choices = NULL,
+            multiple = TRUE,
+            selected = character(0)
+          ),
+          helpText("Default is none (X → Y only). Add controls or other predictors as needed."),
           selectInput("factor_vars", "Treat as factors", choices = NULL, multiple = TRUE),
-          selectInput("standardize", "Standardize (creates _std)", choices = NULL, multiple = TRUE),
-          helpText("Factors stay categorical. Only numeric columns should be standardized.")
+          radioButtons(
+            "do_standardize",
+            "Should any continuous variables be standardized prior to simulations?",
+            choices = c(
+              "Yes — select variables to standardize with scale()" = "yes",
+              "No — data are already standardized (or leave raw)" = "no"
+            ),
+            selected = "yes"
+          ),
+          helpText("Variables must be standardized before simulations unless the uploaded file is already standardized. Dropdowns always show raw names."),
+          conditionalPanel(
+            condition = "input.do_standardize == 'yes'",
+            selectInput(
+              "standardize",
+              "Variables to standardize (creates {var}_std for modeling)",
+              choices = NULL,
+              multiple = TRUE
+            )
+          )
         ),
 
         div(
@@ -533,10 +557,40 @@ ui <- fluidPage(
           tags$p(class = "control-group-title", "Simulation"),
           textInput("effect_sizes", "Effect sizes (comma-separated β)",
                     value = "0.05, 0.10, 0.15, 0.20"),
-          numericInput("nsim", "Simulations per effect size (nsim)",
+          helpText("Coarser: 0.05, 0.10, 0.15, 0.20 · Finer MDE search: 0.08, 0.10, 0.12, …"),
+          numericInput("nsim", "Number of simulations per effect size (nsim)",
                        value = 10, min = 1, max = 5000, step = 1),
-          helpText("Use ~10 to test; ≥1000 for reporting."),
-          numericInput("seed", "Random seed", value = 1995, min = 1, step = 1)
+          helpText("Default 10 to test the code. Increase to 1,000 for final reporting."),
+          numericInput("seed", "Random seed", value = 8675, min = 1, step = 1),
+          helpText("Change seed to check stability across random starts. Each outcome uses its own seed offset for reproducibility.")
+        ),
+
+        div(
+          class = "control-group",
+          tags$p(class = "control-group-title", "Figure options"),
+          radioButtons(
+            "plot_layout",
+            "Figure layout",
+            choices = c(
+              "Combined (side-by-side panels)" = "combined",
+              "Separate (one panel stacked per outcome)" = "separate"
+            ),
+            selected = "combined"
+          ),
+          textInput("xlab", "X-axis label", value = ""),
+          textInput("ylab", "Y-axis label", value = "Power"),
+          numericInput("fig_width", "Figure width (inches)", value = 7, min = 2, max = 20, step = 0.5),
+          numericInput("fig_height", "Figure height (inches)", value = 5, min = 2, max = 20, step = 0.5),
+          selectInput(
+            "fig_format",
+            "Export format",
+            choices = c("PDF (vector)" = "pdf", "PNG" = "png", "TIFF" = "tiff"),
+            selected = "pdf"
+          ),
+          conditionalPanel(
+            condition = "input.fig_format == 'png' || input.fig_format == 'tiff'",
+            numericInput("fig_dpi", "Resolution (dpi)", value = 600, min = 72, max = 1200, step = 50)
+          )
         ),
 
         div(
@@ -556,9 +610,11 @@ ui <- fluidPage(
           tags$button(id = "mobile_nav_toggle", class = "mobile-nav-toggle",
                       type = "button", `aria-label` = "Open navigation", "☰"),
           div(
-            tags$h1(class = "topbar-title", "Sensitivity Analysis"),
-            tags$p(class = "topbar-sub",
-                   "Upload clustered/twin data, then simulate power across effect sizes.")
+            tags$h1(class = "topbar-title", "Sensitivity Power Analysis Tool (via simr)"),
+            tags$p(
+              class = "topbar-sub",
+              "Objective: evaluate the smallest detectable standardized effect size given current sample size with adequate power."
+            )
           )
         ),
         div(
@@ -591,6 +647,15 @@ ui <- fluidPage(
             ),
             conditionalPanel(
               condition = "output.has_data_flag",
+              div(
+                class = "info-card",
+                div(class = "card-kicker", "Sample size check (complete cases)"),
+                tags$p(
+                  style = "margin:0 0 8px; color:#1E3A8A; font-size:13px;",
+                  "simr requires complete data. N below is the sample that will be used for simulations (complete pairs for the selected model variables)."
+                ),
+                verbatimTextOutput("n_preview", placeholder = TRUE)
+              ),
               conditionalPanel(
                 condition = "input.toggle_preview % 2 == 1",
                 div(
@@ -614,7 +679,7 @@ ui <- fluidPage(
                   class = "toolbar-right",
                   downloadButton("download_results", "Download results CSV",
                                  class = "btn-ava-secondary"),
-                  downloadButton("download_plot", "Download plot PNG",
+                  downloadButton("download_plot", "Download figure",
                                  class = "btn-ava-secondary")
                 )
               ),
@@ -629,16 +694,17 @@ ui <- fluidPage(
               div(class = "card-kicker", "Guide"),
               tags$h3("How to use this tool"),
               tags$ol(
-                tags$li("Upload your twin/cluster CSV."),
-                tags$li("Choose the cluster ID; exclude person IDs from modeling."),
-                tags$li("Set the focal IV, one or more DVs, and covariates."),
-                tags$li("Mark categorical columns as factors; standardize continuous variables as needed."),
-                tags$li("Start with a small nsim (e.g., 10). Use ≥1000 for manuscript figures.")
+                tags$li("Upload a finalized CSV with exposure, outcome(s), and covariates."),
+                tags$li("Choose cluster/pair ID; exclude person IDs from modeling."),
+                tags$li("Select one focal predictor, one or more outcomes, and optional covariates (default: none)."),
+                tags$li("Answer whether to standardize continuous variables; if Yes, pick which ones. Dropdowns always show raw names."),
+                tags$li("Review the sample-size check (complete pairs / N) before running."),
+                tags$li("Use nsim = 10 to test; increase to 1,000 for final reporting."),
+                tags$li("Export the power table as CSV and the figure as PDF (default), PNG, or TIFF.")
               ),
               tags$p(
-                tags$strong("Example setup: "),
-                "IV = mv; DVs = connection, GrimAgeAA, DunedinPACE; ",
-                "covariates = all other non-ID columns."
+                tags$strong("Objective: "),
+                "Evaluate the smallest detectable standardized effect size given current sample size with adequate power (phenotypic multilevel models with a random intercept for cluster/pair ID)."
               )
             )
           )
@@ -720,7 +786,7 @@ server <- function(input, output, session) {
     id_guess <- intersect(
       c("studyid", "pair_id", "pairid", "fid", "id", "twinid", "person_id"), cols
     )
-    default_cov <- setdiff(cols, c(default_pair, default_out, id_guess, "DNAmGrimAge2BasedOnRealAge"))
+    # Spec: covariates default to none
     default_std <- intersect(
       unique(c(default_pred, default_out, "age", "ave_age", "bmi", "mv", "connection",
                "DunedinPACE", "GrimAgeAA", "highested", "emp_hhinc")),
@@ -731,10 +797,24 @@ server <- function(input, output, session) {
     updateSelectInput(session, "exclude_ids", choices = cols, selected = setdiff(id_guess, default_pair))
     updateSelectInput(session, "predictor", choices = cols, selected = default_pred)
     updateSelectInput(session, "outcomes", choices = cols, selected = default_out)
-    updateSelectInput(session, "covariates", choices = cols, selected = default_cov)
+    updateSelectInput(session, "covariates", choices = cols, selected = character(0))
     updateSelectInput(session, "factor_vars", choices = cols, selected = fac_guess)
     updateSelectInput(session, "standardize", choices = num_cols, selected = default_std)
+    updateTextInput(session, "xlab", value = if (!is.null(default_pred)) {
+      paste0("Standardized ", default_pred, " effect size (\u03b2)")
+    } else {
+      "Standardized effect size (\u03b2)"
+    })
   }, ignoreNULL = TRUE)
+
+  # Keep X label default aligned with focal predictor (raw name), unless user edits
+  observeEvent(input$predictor, {
+    req(input$predictor)
+    updateTextInput(
+      session, "xlab",
+      value = paste0("Standardized ", input$predictor, " effect size (\u03b2)")
+    )
+  }, ignoreInit = TRUE)
 
   prepared_data <- reactive({
     df <- raw_data()
@@ -841,7 +921,90 @@ server <- function(input, output, session) {
     datatable(prepared_data(), options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
   })
 
+  # Pre-simulation complete-case N check (raw names; mirrors model vars after std map)
+  output$n_preview <- renderPrint({
+    req(has_data(), input$pair_id, input$predictor)
+    outcomes <- input$outcomes
+    if (is.null(outcomes) || length(outcomes) < 1) {
+      cat("Select at least one focal outcome to preview sample size.\n")
+      return()
+    }
+    df0 <- prepared_data()
+    pair_col <- input$pair_id
+    do_std <- identical(input$do_standardize, "yes")
+    std_vars <- if (do_std) (input$standardize %||% character(0)) else character(0)
+    std_vars <- intersect(std_vars, names(df0))
+    std_vars <- std_vars[vapply(std_vars, function(v) is.numeric(df0[[v]]), logical(1))]
+    df <- add_std_cols(df0, std_vars)
+
+    pred <- std_name(input$predictor, std_vars)
+    cov_raw <- setdiff(
+      unique(c(input$predictor, input$covariates %||% character(0))),
+      c(pair_col, input$exclude_ids %||% character(0), outcomes)
+    )
+    covs <- unname(vapply(cov_raw, std_name, character(1), standardize_vars = std_vars))
+
+    cat(sprintf("Uploaded rows: %d\n", nrow(df0)))
+    cat(sprintf("Standardize: %s\n", if (do_std) paste(std_vars, collapse = ", ") else "none (using raw / already standardized)"))
+    cat(sprintf("Covariates: %s\n\n", if (length(cov_raw)) paste(cov_raw, collapse = ", ") else "(none)"))
+
+    for (o in outcomes) {
+      ov <- std_name(o, std_vars)
+      filtered <- filter_complete_pairs(
+        df = df, vars = unique(c(ov, covs)), pair_col = pair_col, label = o
+      )
+      cat(sprintf(
+        "[%s] complete pairs = %d | individuals in simulation = %d\n",
+        o, filtered$n_pairs, nrow(filtered$data)
+      ))
+    }
+  })
+
   output$run_log <- renderText(log_rv())
+
+  build_power_plot <- function(power_results, xlab, ylab, layout) {
+    n_panels <- length(unique(power_results$outcome))
+    if (identical(layout, "separate")) {
+      facet_nrow <- n_panels
+    } else {
+      facet_nrow <- if (n_panels <= 3) 1L else 2L
+    }
+    ggplot(power_results, aes(x = effect_size, y = power)) +
+      geom_hline(yintercept = 0.80, linetype = "dashed",
+                 color = "gray50", linewidth = 0.5) +
+      geom_ribbon(aes(ymin = lower, ymax = upper),
+                  alpha = 0.2, fill = "#AB0520") +
+      geom_line(color = "#AB0520", linewidth = 0.8) +
+      geom_point(color = "#AB0520", size = 2) +
+      facet_wrap(~ outcome, nrow = facet_nrow) +
+      scale_y_continuous(
+        limits = c(0, 1), breaks = seq(0, 1, by = 0.10),
+        labels = scales::percent_format(accuracy = 1)
+      ) +
+      scale_x_continuous(breaks = unique(power_results$effect_size)) +
+      labs(
+        x = if (nzchar(xlab %||% "")) xlab else "Standardized effect size (\u03b2)",
+        y = if (nzchar(ylab %||% "")) ylab else "Power",
+        title = "Sensitivity power analysis"
+      ) +
+      theme_bw(base_size = 12) +
+      theme(
+        plot.margin = margin(8, 12, 8, 8),
+        strip.text = element_text(face = "bold", size = 11),
+        panel.grid.minor = element_line(color = "gray90", linewidth = 0.3)
+      )
+  }
+
+  # Rebuild figure when display/export options change (no re-simulation)
+  observe({
+    req(results_rv())
+    plot_rv(build_power_plot(
+      results_rv(),
+      xlab = input$xlab,
+      ylab = input$ylab,
+      layout = input$plot_layout
+    ))
+  })
 
   sa_progress <- function(stage, detail) {
     session$sendCustomMessage(
@@ -862,9 +1025,10 @@ server <- function(input, output, session) {
     pair_col <- input$pair_id
     predictor_raw <- input$predictor
     outcomes_raw <- input$outcomes
-    cov_raw <- input$covariates
-    std_vars <- input$standardize %||% character(0)
+    cov_raw <- input$covariates %||% character(0)
     exclude <- input$exclude_ids %||% character(0)
+    do_std <- identical(input$do_standardize, "yes")
+    std_vars <- if (do_std) (input$standardize %||% character(0)) else character(0)
 
     if (is.null(pair_col) || !nzchar(pair_col)) {
       showNotification("Select a pair / cluster ID.", type = "error"); return()
@@ -886,6 +1050,7 @@ server <- function(input, output, session) {
       showNotification("nsim must be ≥ 1.", type = "error"); return()
     }
 
+    # Focal IV always in the model; covariates add controls / other predictors
     cov_raw <- setdiff(unique(c(predictor_raw, cov_raw)), c(pair_col, exclude, outcomes_raw))
     std_vars <- setdiff(std_vars, c(pair_col, exclude))
     std_vars <- intersect(std_vars, names(df0))
@@ -895,8 +1060,12 @@ server <- function(input, output, session) {
     sa_progress(0L, "Preparing data…")
 
     withProgress(message = "Running sensitivity analysis", value = 0, {
-      sa_progress(1L, "Standardizing variables…")
-      append_log("Standardizing: ", paste(std_vars, collapse = ", "))
+      sa_progress(1L, if (do_std) "Standardizing variables…" else "Using raw / pre-standardized variables…")
+      if (do_std) {
+        append_log("Standardizing: ", paste(std_vars, collapse = ", "))
+      } else {
+        append_log("Standardization skipped (user chose No).")
+      }
       df <- add_std_cols(df0, std_vars)
 
       pred <- std_name(predictor_raw, std_vars)
@@ -905,10 +1074,29 @@ server <- function(input, output, session) {
         list(outcome_raw = o, outcome_var = std_name(o, std_vars), label = o)
       })
 
-      append_log("Predictor in models: ", pred)
-      append_log("Covariates in models: ", paste(covs, collapse = ", "))
+      append_log("Predictor (display): ", predictor_raw, " | model: ", pred)
+      append_log(
+        "Covariates (display): ",
+        if (length(setdiff(cov_raw, predictor_raw))) {
+          paste(setdiff(cov_raw, predictor_raw), collapse = ", ")
+        } else {
+          "(none)"
+        }
+      )
 
-      set.seed(input$seed)
+      # Pre-sim sample-size check (complete pairs)
+      append_log("--- Sample size to be used for simulations ---")
+      for (spec in outcome_specs) {
+        filtered0 <- filter_complete_pairs(
+          df = df, vars = unique(c(spec$outcome_var, covs)),
+          pair_col = pair_col, label = spec$label
+        )
+        append_log(sprintf(
+          "[%s] complete pairs = %d | N individuals = %d",
+          spec$label, filtered0$n_pairs, nrow(filtered0$data)
+        ))
+      }
+
       total_steps <- max(1, length(outcome_specs) * length(effect_sizes))
       step_box <- new.env(parent = emptyenv())
       step_box$i <- 0
@@ -917,11 +1105,18 @@ server <- function(input, output, session) {
 
       power_results <- map_dfr(seq_along(outcome_specs), function(j) {
         spec <- outcome_specs[[j]]
+        # Per-outcome seed so dropping outcomes later does not shift remaining results
+        set.seed(as.integer(input$seed) + j * 1009L)
+
         all_vars <- unique(c(spec$outcome_var, covs))
         filtered <- filter_complete_pairs(
           df = df, vars = all_vars, pair_col = pair_col, label = spec$label
         )
-        append_log(sprintf("[%s] Complete pairs: %d", spec$label, filtered$n_pairs))
+        append_log(sprintf(
+          "[%s] Using complete pairs = %d (N = %d) | seed = %d",
+          spec$label, filtered$n_pairs, nrow(filtered$data),
+          as.integer(input$seed) + j * 1009L
+        ))
 
         if (filtered$n_pairs < 2) {
           append_log(sprintf("[%s] Skipped — not enough complete pairs.", spec$label))
@@ -978,36 +1173,13 @@ server <- function(input, output, session) {
       power_results <- power_results %>%
         mutate(outcome = factor(outcome, levels = outcomes_raw))
 
-      n_panels <- length(unique(power_results$outcome))
-      facet_nrow <- if (n_panels <= 3) 1L else 2L
-
-      fig <- ggplot(power_results, aes(x = effect_size, y = power)) +
-        geom_hline(yintercept = 0.80, linetype = "dashed",
-                   color = "gray50", linewidth = 0.5) +
-        geom_ribbon(aes(ymin = lower, ymax = upper),
-                    alpha = 0.2, fill = "#AB0520") +
-        geom_line(color = "#AB0520", linewidth = 0.8) +
-        geom_point(color = "#AB0520", size = 2) +
-        facet_wrap(~ outcome, nrow = facet_nrow) +
-        scale_y_continuous(
-          limits = c(0, 1), breaks = seq(0, 1, by = 0.10),
-          labels = scales::percent_format(accuracy = 1)
-        ) +
-        scale_x_continuous(breaks = unique(power_results$effect_size)) +
-        labs(
-          x = paste0("Standardized ", pred, " effect size (\u03b2)"),
-          y = "Power",
-          title = "Sensitivity analysis"
-        ) +
-        theme_bw(base_size = 12) +
-        theme(
-          plot.margin = margin(8, 12, 8, 8),
-          strip.text = element_text(face = "bold", size = 11),
-          panel.grid.minor = element_line(color = "gray90", linewidth = 0.3)
-        )
-
       results_rv(power_results)
-      plot_rv(fig)
+      plot_rv(build_power_plot(
+        power_results,
+        xlab = input$xlab,
+        ylab = input$ylab,
+        layout = input$plot_layout
+      ))
       curves_open(TRUE)
       results_open(TRUE)
       sync_toggle_labels()
@@ -1040,10 +1212,24 @@ server <- function(input, output, session) {
   )
 
   output$download_plot <- downloadHandler(
-    filename = function() paste0("power_plot_", Sys.Date(), ".png"),
+    filename = function() {
+      ext <- input$fig_format %||% "pdf"
+      paste0("power_plot_", Sys.Date(), ".", ext)
+    },
     content = function(file) {
       req(plot_rv())
-      ggsave(file, plot = plot_rv(), width = 11, height = 5.5, dpi = 150)
+      w <- input$fig_width %||% 7
+      h <- input$fig_height %||% 5
+      fmt <- input$fig_format %||% "pdf"
+      dpi <- input$fig_dpi %||% 600
+      if (fmt == "pdf") {
+        ggsave(file, plot = plot_rv(), width = w, height = h, device = "pdf")
+      } else if (fmt == "tiff") {
+        ggsave(file, plot = plot_rv(), width = w, height = h, dpi = dpi,
+               device = "tiff", compression = "lzw")
+      } else {
+        ggsave(file, plot = plot_rv(), width = w, height = h, dpi = dpi, device = "png")
+      }
     }
   )
 }
